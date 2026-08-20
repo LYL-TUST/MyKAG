@@ -50,7 +50,11 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv()
 
-logging.basicConfig(level=logging.WARNING)
+logging.basicConfig(level=logging.INFO)
+# Keep the noisy HTTP/LLM client logs quiet; graph INFO (tool calls, vault
+# init, retries) stays visible so a hang is diagnosable from the log.
+for _noisy in ("httpx", "httpcore", "openai", "urllib3", "http.client"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 # Allow longer for the slowest cases (single agent can occasionally hit a
 # slow retriever round). v1 used 240s; v2 keeps it but reduces judge waste.
@@ -392,6 +396,11 @@ def _try_generate_report() -> None:
 
 
 def run_benchmark() -> dict:
+    # Auto-dump thread stacks if a step hangs (seen 2026-08-20: first run
+    # appeared stuck with no output; WARNING-level logging hid the cause).
+    import faulthandler
+
+    faulthandler.dump_traceback_later(600, exit=True)
     _prepare_qdrant()
     _check_dataset_coverage()
     return asyncio.run(_run_benchmark_async())
