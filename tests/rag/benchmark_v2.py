@@ -56,9 +56,10 @@ logging.basicConfig(level=logging.INFO)
 for _noisy in ("httpx", "httpcore", "openai", "urllib3", "http.client"):
     logging.getLogger(_noisy).setLevel(logging.WARNING)
 
-# Allow longer for the slowest cases (single agent can occasionally hit a
-# slow retriever round). v1 used 240s; v2 keeps it but reduces judge waste.
-PER_QUERY_TIMEOUT = 240
+# Allow longer for the slowest cases (single agent can hit 400s+ on deep
+# multi-round answers; v1 used 240s and v2's first run stalled on an un-
+# guarded judge call). Both graph runs and judge get hard timeouts now.
+PER_QUERY_TIMEOUT = int(os.environ.get("BENCH_QUERY_TIMEOUT", "600"))
 
 # Result files ----------------------------------------------------------
 _JSONL_PATH = _PROJECT_ROOT / "tests" / "rag" / "_bench_results.jsonl"
@@ -102,9 +103,15 @@ def _prepare_qdrant() -> str:
 async def _run_knowledge_agent(query: str, tid: str) -> tuple[str, int]:
     from src.agent.knowledge_graph import docs_agent
 
-    state = await docs_agent.ainvoke(
-        {"messages": [{"role": "user", "content": query}]},
-        config={"configurable": {"thread_id": tid}},
+    # wait_for guards against a hung upstream call (SiliconFlow occasionally
+    # stalls on a socket; without a timeout the whole benchmark stalls - seen
+    # 2026-08-20, faulthandler dump showed the loop parked in asyncio.select).
+    state = await asyncio.wait_for(
+        docs_agent.ainvoke(
+            {"messages": [{"role": "user", "content": query}]},
+            config={"configurable": {"thread_id": tid}},
+        ),
+        timeout=PER_QUERY_TIMEOUT,
     )
     msgs = state.get("messages") or []
     answer = str(msgs[-1].content) if msgs else ""
@@ -121,7 +128,9 @@ async def _run_multi_agent(query: str, tid: str) -> tuple[str, int]:
             config={"configurable": {"thread_id": tid}},
         )
 
-    final = await asyncio.to_thread(_invoke)
+    final = await asyncio.wait_for(
+        asyncio.to_thread(_invoke), timeout=PER_QUERY_TIMEOUT
+    )
     answer = str(final["messages"][-1].content) if final.get("messages") else ""
     rounds = final.get("attempts", 0) + 1
     return answer, rounds
@@ -136,7 +145,9 @@ async def _run_supervisor_agent(query: str, tid: str) -> tuple[str, int]:
             config={"configurable": {"thread_id": tid}},
         )
 
-    final = await asyncio.to_thread(_invoke)
+    final = await asyncio.wait_for(
+        asyncio.to_thread(_invoke), timeout=PER_QUERY_TIMEOUT
+    )
     answer = final.get("final", "")
     rounds = final.get("iters", 0)
     return answer, rounds
@@ -165,8 +176,11 @@ async def _judge(model, question: str, answer: str, expected: str) -> Optional[i
         f"AI 回答: {answer[:2000]}"
     )
     try:
-        resp = await model.ainvoke(
-            [SystemMessage(content=_JUDGE_SYSTEM), HumanMessage(content=user)]
+        resp = await asyncio.wait_for(
+            model.ainvoke(
+                [SystemMessage(content=_JUDGE_SYSTEM), HumanMessage(content=user)]
+            ),
+            timeout=int(os.environ.get("BENCH_JUDGE_TIMEOUT", "120")),
         )
         text = str(resp.content or "").strip()
         text = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", text).strip()
