@@ -393,7 +393,49 @@ def _try_generate_report() -> None:
 
 def run_benchmark() -> dict:
     _prepare_qdrant()
+    _check_dataset_coverage()
     return asyncio.run(_run_benchmark_async())
+
+
+def _check_dataset_coverage() -> None:
+    """Pre-flight: warn loudly if the index lacks the eval dataset's notes.
+
+    Guards against the 2026-08-20 incident where the benchmark ran against a
+    partial index (only the new vault notes), so every answer about the old
+    vault was hallucinated and the LLM-judge still scored it 3-5.
+    """
+    from qdrant_client import QdrantClient
+
+    from tests.rag.eval_dataset import EVAL_DATASET
+
+    qdrant_path = os.environ.get("QDRANT_PATH", "./qdrant_data_v2")
+    client = QdrantClient(path=qdrant_path)
+    try:
+        res = client.scroll(
+            "obsidian_vault", limit=20_000,
+            with_payload=["note_name"], with_vectors=False,
+        )
+        indexed = {p.payload.get("note_name") for p in res[0] if p.payload.get("note_name")}
+    finally:
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    expected = {n for case in EVAL_DATASET for n in case["relevant_notes"]}
+    missing = sorted(expected - indexed)
+    if missing:
+        print(
+            f"\n[WARNING] Index {qdrant_path} is MISSING dataset notes: {missing}\n"
+            f"          Benchmark answers for those questions will be hallucinated.\n"
+            f"          Fix: point QDRANT_PATH at an index containing ALL of {sorted(expected)}.\n",
+            flush=True,
+        )
+    else:
+        print(
+            f"[bench] index coverage OK: all {len(expected)} dataset notes present",
+            flush=True,
+        )
 
 
 if __name__ == "__main__":

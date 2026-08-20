@@ -1,31 +1,41 @@
 """RAGAS evaluation runner for Personal Knowledge Agent.
 
-Evaluates the retrieval pipeline quality using the RAGAS framework:
+Evaluates the retrieval + generation pipeline using the RAGAS framework:
 - Faithfulness: 生成答案是否忠实于检索到的上下文
-- Context Relevancy: 检索到的上下文是否与问题相关
+- Answer Relevancy: 答案是否切题
 - Context Precision: 相关上下文的排序是否靠前
-- Answer Correctness: 生成的答案与参考答案是否一致
+- Context Recall: 检索是否召回了全部相关上下文
+
+Fix log (2026-08-20):
+1. **answer 由真实 graph 生成**: 之前是"拼接检索片段"当答案,现在改用
+   knowledge_agent 单 Agent 真实调用 (docs_agent.ainvoke)。
+2. **judge 换 qwen3-8b**: 之前写死 `deepseek-ai/DeepSeek-V4`(硅基流动不存在的
+   旧 id),现在走模型注册表 `JUDGE_MODEL_KEY`(默认 qwen3-8b,env 可覆盖),并
+   关闭 thinking 提速。
+3. **修旧模型 id**: 同上,registry 解析,不再出现不存在的模型。
+4. **索引覆盖预检**: 评测前扫描 Qdrant 索引里的 note_name,与数据集的
+   relevant_notes 对比,防止在残缺索引上跑出"幻觉高分"。
 
 Usage:
     # Install dependencies
-    pip install ragas datasets
+    pip install -e ".[eval]"
 
-    # Set your LLM for evaluation (used as judge)
-    export OPENAI_API_KEY=your_key
-    export OPENAI_BASE_URL=https://api.siliconflow.cn/v1
+    # .env 需有 OPENAI_API_KEY / OPENAI_BASE_URL(硅基流动)与 Qdrant 索引
+    python tests/rag/test_ragas.py --ragas
+    python tests/rag/test_ragas.py            # 只跑检索命中率(无需 LLM 生成)
 
-    # Run evaluation
-    python tests/rag/test_ragas.py
-
-Or with pytest:
-    pytest tests/rag/test_ragas.py -v
+    RAGAS_METRICS=faithfulness,answer_relevancy python tests/rag/test_ragas.py --ragas
+    QDRANT_PATH=./qdrant_data_v2 python tests/rag/test_ragas.py --ragas
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import shutil
 import sys
+import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -36,16 +46,96 @@ sys.path.insert(0, str(_PROJECT_ROOT))
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
+# Graph answer generation timeout (single agent can be slow on first query).
+PER_QUERY_TIMEOUT = 240
+
+
+# ---------------------------------------------------------------------------
+# Qdrant isolation: run against a private copy so we never collide with the
+# running `langgraph dev` server (Qdrant local mode holds a file lock).
+# ---------------------------------------------------------------------------
+
+
+def _prepare_qdrant() -> None:
+    """Point QDRANT_PATH at a private copy of the configured index."""
+    import dotenv
+
+    dotenv.load_dotenv()
+    src = os.environ.get("QDRANT_PATH", "./qdrant_data_v2")
+    if os.environ.get("QDRANT_EVAL_USE_EXISTING") == "1":
+        return
+    dst = str(_PROJECT_ROOT / "_ragas_qdrant")
+    if Path(dst).is_dir() and (Path(dst) / "meta.json").is_file():
+        os.environ["QDRANT_PATH"] = dst
+        logger.info("Reusing eval index copy: %s", dst)
+        return
+    if Path(src).is_dir():
+        if Path(dst).exists():
+            shutil.rmtree(dst)
+        shutil.copytree(src, dst)
+        os.environ["QDRANT_PATH"] = dst
+        logger.info("Copied Qdrant index %s -> %s", src, dst)
+    else:
+        logger.warning("QDRANT_PATH=%s not found; will build from vault if needed", src)
+
 
 def _ensure_vault_index() -> None:
     """Initialize vault if not already done."""
     from src.tools.vault_tools import _init_vault, _vault_retriever
     if _vault_retriever is None:
-        vault_path = os.environ.get("OBSIDIAN_VAULT_PATH", str(_PROJECT_ROOT.parent / "obsidian-vault"))
+        vault_path = os.environ.get(
+            "OBSIDIAN_VAULT_PATH", str(_PROJECT_ROOT.parent / "obsidian-vault")
+        )
         _init_vault(vault_path)
+        if _vault_retriever is None:
+            raise RuntimeError(
+                f"Vault init failed (vault={vault_path}). "
+                "Check OBSIDIAN_VAULT_PATH and QDRANT_PATH."
+            )
 
 
-def _run_retrieval(query: str, top_k: int = 3) -> List[dict]:
+def _check_dataset_coverage() -> dict:
+    """Pre-flight: compare dataset relevant_notes against the Qdrant index.
+
+    Prevents the 2026-08-20 incident where the benchmark ran against a partial
+    index that did NOT contain the dataset's notes, producing hallucination-
+    inflated scores.
+    """
+    from qdrant_client import QdrantClient
+
+    from tests.rag.eval_dataset import EVAL_DATASET
+
+    qdrant_path = os.environ.get("QDRANT_PATH", "./qdrant_data_v2")
+    client = QdrantClient(path=qdrant_path)
+    try:
+        res = client.scroll(
+            "obsidian_vault", limit=10_000, with_payload=["note_name"], with_vectors=False
+        )
+        indexed = {p.payload.get("note_name") for p in res[0] if p.payload.get("note_name")}
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+    expected = {n for case in EVAL_DATASET for n in case["relevant_notes"]}
+    missing = sorted(expected - indexed)
+    logger.info(
+        "Dataset requires %d notes; index has %d of them -> %s",
+        len(expected),
+        len(expected & indexed),
+        "OK" if not missing else f"MISSING: {missing}",
+    )
+    if missing:
+        logger.warning(
+            "WARNING: index %s lacks dataset notes: %s. Scores may be unreliable.",
+            qdrant_path,
+            missing,
+        )
+    return {"expected": expected, "indexed": indexed, "missing": missing}
+
+
+def _run_retrieval(query: str, top_k: int = 5) -> List[dict]:
     """Run retrieval and return context chunks."""
     from src.tools.vault_tools import _vault_retriever
     if _vault_retriever is None:
@@ -54,18 +144,251 @@ def _run_retrieval(query: str, top_k: int = 3) -> List[dict]:
     return results
 
 
+# ---------------------------------------------------------------------------
+# Answer generation via the REAL graph (single Agent, highest quality).
+# GuardrailsMiddleware registers async hooks, so ainvoke must run on one
+# asyncio loop (same constraint as benchmark_v2).
+# ---------------------------------------------------------------------------
+
+
+async def _generate_answer_async(question: str, idx: int) -> dict:
+    from src.agent.knowledge_graph import docs_agent
+
+    t0 = time.monotonic()
+    try:
+        state = await asyncio.wait_for(
+            docs_agent.ainvoke(
+                {"messages": [{"role": "user", "content": question}]},
+                config={"configurable": {"thread_id": f"ragas-{idx}"}},
+            ),
+            timeout=PER_QUERY_TIMEOUT,
+        )
+        msgs = state.get("messages") or []
+        answer = str(msgs[-1].content) if msgs else ""
+        turns = sum(1 for m in msgs if getattr(m, "type", "") == "tool")
+        return {
+            "answer": answer,
+            "latency": time.monotonic() - t0,
+            "turns": turns,
+            "error": None,
+        }
+    except asyncio.TimeoutError:
+        return {"answer": "", "latency": time.monotonic() - t0,
+                "turns": -1, "error": "timeout"}
+    except Exception as exc:  # noqa: BLE001
+        return {"answer": "", "latency": time.monotonic() - t0,
+                "turns": -1, "error": str(exc)[:200]}
+
+
+def _generate_answers(questions: list[str]) -> list[dict]:
+    """Run the real graph over all questions on a single asyncio loop."""
+    return asyncio.run(asyncio.gather(*[
+        _generate_answer_async(q, i) for i, q in enumerate(questions)
+    ]))
+
+
+# ---------------------------------------------------------------------------
+# RAGAS evaluation
+# ---------------------------------------------------------------------------
+
+
+def _build_judge_llm():
+    """Build the judge LLM from the model registry (qwen3-8b by default)."""
+    from langchain_openai import ChatOpenAI
+
+    from src.agent.config import _get_model_by_key
+
+    cfg = _get_model_by_key("JUDGE_MODEL_KEY", "qwen3-8b")
+    api_key = os.environ.get("OPENAI_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is required for RAGAS judge LLM")
+    llm = ChatOpenAI(
+        model=cfg.id,
+        openai_api_key=api_key,
+        openai_api_base=os.environ.get(
+            "OPENAI_BASE_URL", "https://api.siliconflow.cn/v1"
+        ),
+        temperature=0,
+        max_tokens=1024,
+        extra_body={"enable_thinking": False},  # judge 永远关 thinking 提速
+    )
+    logger.info("RAGAS judge model: %s (%s)", cfg.key, cfg.id)
+    return llm, cfg
+
+
+def _build_embeddings():
+    """Embeddings for embedding-based RAGAS metrics (bge-m3 on SiliconFlow)."""
+    from langchain_openai import OpenAIEmbeddings
+
+    emb = OpenAIEmbeddings(
+        model="BAAI/bge-m3",
+        openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
+        openai_api_base=os.environ.get(
+            "OPENAI_BASE_URL", "https://api.siliconflow.cn/v1"
+        ),
+    )
+    logger.info("RAGAS embeddings: BAAI/bge-m3")
+    return emb
+
+
+# ---------------------------------------------------------------------------
+# ragas compat shim
+# ---------------------------------------------------------------------------
+
+
+def _patch_ragas_imports() -> None:
+    """Shim the langchain_community.vertexai imports ragas hard-requires.
+
+    ragas 0.3/0.4 imports `langchain_community.chat_models.vertexai` and
+    `langchain_community.llms.VertexAI` at module import time, but the
+    langchain-community available in this environment doesn't ship that module
+    (and a compatible version can't be installed without downgrading
+    langchain-core). ragas only uses these classes for `isinstance` checks in
+    MULTIPLE_COMPLETION_SUPPORTED, so dummy classes are safe.
+    """
+    import sys
+    import types
+
+    if "langchain_community.chat_models.vertexai" in sys.modules:
+        return
+
+    lc = types.ModuleType("langchain_community")
+    chat = types.ModuleType("langchain_community.chat_models")
+    vertex = types.ModuleType("langchain_community.chat_models.vertexai")
+    vertex.ChatVertexAI = type("ChatVertexAI", (), {})
+    chat.vertexai = vertex
+    lc.chat_models = chat
+    llms = types.ModuleType("langchain_community.llms")
+    llms.VertexAI = type("VertexAI", (), {})
+    lc.llms = llms
+    sys.modules["langchain_community"] = lc
+    sys.modules["langchain_community.chat_models"] = chat
+    sys.modules["langchain_community.chat_models.vertexai"] = vertex
+    sys.modules["langchain_community.llms"] = llms
+
+
+def _to_mean(value) -> float:
+    """Convert a ragas score (float, list, or ndarray) to a scalar mean."""
+    try:
+        import numpy as np
+
+        if isinstance(value, np.ndarray):
+            arr = value.astype(float)
+            return float(arr.mean()) if arr.size else 0.0
+    except Exception:  # noqa: BLE001 - numpy optional
+        pass
+    if isinstance(value, (list, tuple)):
+        return float(sum(value) / len(value)) if value else 0.0
+    return float(value)
+
+
+def _run_ragas_evaluation() -> dict:
+    """Run RAGAS evaluation framework (answers generated by the real graph).
+
+    Requires: pip install -e ".[eval]" (ragas + datasets)
+    """
+    _patch_ragas_imports()
+    from datasets import Dataset
+    from ragas import evaluate
+    from ragas.metrics import (
+        answer_relevancy,
+        context_precision,
+        context_recall,
+        faithfulness,
+    )
+    from tests.rag.eval_dataset import EVAL_DATASET
+
+    # Generate answers with the real graph first (single asyncio loop).
+    logger.info("Generating answers with knowledge_agent graph (%d questions)...",
+                len(EVAL_DATASET))
+    results = _generate_answers([c["question"] for c in EVAL_DATASET])
+
+    ragas_data = []
+    for case, res in zip(EVAL_DATASET, results):
+        query = case["question"]
+        retrieved = _run_retrieval(query, top_k=3)
+        contexts = [r["text"][:500] for r in retrieved[:3]]
+        status = f" ({res['latency']:.0f}s, {res['turns']} tool rounds)" if not res["error"] else f" ({res['error']})"
+        logger.info(
+            "Q: %s... answer%s", query[:40], status
+        )
+        ragas_data.append({
+            "question": query,
+            "answer": res["answer"],
+            "contexts": contexts,
+            "ground_truth": case["expected_answer"],
+        })
+
+    dataset = Dataset.from_list(ragas_data)
+
+    metric_names = [
+        m for m in (
+            os.environ.get("RAGAS_METRICS", "").split(",") if os.environ.get("RAGAS_METRICS")
+            else ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]
+        ) if m
+    ]
+    all_metrics = {
+        "faithfulness": faithfulness,
+        "answer_relevancy": answer_relevancy,
+        "context_precision": context_precision,
+        "context_recall": context_recall,
+    }
+    metrics = [all_metrics[name] for name in metric_names]
+    logger.info("RAGAS metrics: %s", metric_names)
+
+    import ragas
+    version = tuple(int(x) for x in ragas.__version__.split(".")[:2])
+
+    if version >= (0, 3):
+        # ragas 0.3+: metrics are instances; set llm/embeddings per metric.
+        from ragas.embeddings import LangchainEmbeddingsWrapper
+        from ragas.llms import LangchainLLMWrapper
+
+        llm_wrapper = LangchainLLMWrapper(_build_judge_llm()[0])
+        emb_wrapper = LangchainEmbeddingsWrapper(_build_embeddings())
+        for m in metrics:
+            m.llm = llm_wrapper
+            m.embeddings = emb_wrapper
+        result = evaluate(dataset, metrics=metrics)
+        # RagasResult["metric"] returns float mean (0.3) or per-row list (0.4)
+        scores = {
+            name: round(_to_mean(result[name]), 4) for name in metric_names
+        }
+    else:
+        # ragas 0.2.x: evaluate(..., llm=..., embeddings=...)
+        result = evaluate(
+            dataset,
+            metrics=metrics,
+            llm=_build_judge_llm()[0],
+            embeddings=_build_embeddings(),
+        )
+        scores = {k: round(float(v), 4) for k, v in result.items()}
+
+    logger.info("RAGAS Metrics:")
+    for name, score in scores.items():
+        logger.info("  %s: %.3f", name, float(score))
+
+    return {"metrics": {k: round(float(v), 4) for k, v in scores.items()},
+            "per_query": [{
+                "question": c["question"][:60],
+                "answer_len": len(r["answer"]),
+                "latency": round(r["latency"], 1),
+                "turns": r["turns"],
+                "error": r["error"],
+            } for c, r in zip(EVAL_DATASET, results)]}
+
+
 def run_evaluation(use_ragas: bool = True) -> dict:
     """Run the full evaluation suite.
 
     Args:
         use_ragas: If True, use RAGAS framework. If False, do basic metrics only.
-
-    Returns:
-        Dict with evaluation metrics.
     """
     from tests.rag.eval_dataset import EVAL_DATASET
 
+    _prepare_qdrant()
     _ensure_vault_index()
+    _check_dataset_coverage()
 
     results = {
         "total_queries": len(EVAL_DATASET),
@@ -105,78 +428,17 @@ def run_evaluation(use_ragas: bool = True) -> dict:
     if use_ragas:
         try:
             ragas_results = _run_ragas_evaluation()
-            results["ragas_metrics"] = ragas_results
-        except ImportError:
-            logger.warning("RAGAS not installed. Skipping RAGAS metrics. Install: pip install ragas datasets")
+            results["ragas_metrics"] = ragas_results["metrics"]
+            results["answer_stats"] = ragas_results["per_query"]
+        except ImportError as exc:
+            logger.warning(
+                "RAGAS not installed. Skipping RAGAS metrics. Install: pip install -e \".[eval]\" (%s)",
+                exc,
+            )
         except Exception as e:
             logger.warning(f"RAGAS evaluation failed: {e}")
 
     return results
-
-
-def _run_ragas_evaluation() -> dict:
-    """Run RAGAS evaluation framework.
-
-    Requires: pip install ragas datasets openai
-    """
-    from datasets import Dataset
-    from ragas import evaluate
-    from ragas.metrics import (
-        faithfulness,
-        answer_relevancy,
-        context_precision,
-        context_recall,
-    )
-    from tests.rag.eval_dataset import EVAL_DATASET
-    from src.tools.vault_tools import _vault_retriever
-
-    # Collect contexts and generate answers
-    ragas_data = []
-    for case in EVAL_DATASET:
-        query = case["question"]
-        ground_truth = case["expected_answer"]
-        results = _vault_retriever.search(query, top_k=3, expand_wikilinks=True)
-        contexts = [r["text"][:500] for r in results[:3]]
-
-        # Generate a simple answer by concatenating context
-        # (In production, you'd call the full Agent pipeline)
-        answer_parts = []
-        for r in results[:3]:
-            answer_parts.append(f"[{r['note_name']}]: {r['text'][:200]}")
-
-        answer = "\n\n".join(answer_parts)
-
-        ragas_data.append({
-            "question": query,
-            "answer": answer,
-            "contexts": contexts,
-            "ground_truth": ground_truth,
-        })
-
-    dataset = Dataset.from_list(ragas_data)
-
-    metrics = [faithfulness, answer_relevancy, context_precision, context_recall]
-
-    # Use a judge LLM for evaluation
-    from langchain_openai import ChatOpenAI
-    import os
-    evaluator_llm = ChatOpenAI(
-        model="deepseek-ai/DeepSeek-V4",
-        openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
-        openai_api_base=os.environ.get("OPENAI_BASE_URL", "https://api.siliconflow.cn/v1"),
-    )
-
-    result = evaluate(
-        dataset,
-        metrics=metrics,
-        llm=evaluator_llm,
-    )
-
-    logger.info(f"\nRAGAS Metrics:")
-    for metric_name, score in result.items():
-        logger.info(f"  {metric_name}: {score:.3f}")
-
-    return {k: round(float(v), 4) for k, v in result.items()}
 
 
 def main():
@@ -190,10 +452,16 @@ def main():
     print(f"Total queries: {results['total_queries']}")
     print(f"Retrieval Hit Rate: {results['retrieval_hit_rate']:.1%}")
 
-    if results["ragas_metrics"]:
+    if results.get("ragas_metrics"):
         print(f"\nRAGAS Metrics:")
         for k, v in results["ragas_metrics"].items():
             print(f"  {k}: {v:.3f}")
+
+    if results.get("answer_stats"):
+        print(f"\nAnswer Generation Stats:")
+        for q in results["answer_stats"]:
+            err = f" ({q['error']})" if q["error"] else f" ({q['latency']}s, {q['turns']} rounds)"
+            print(f"  {q['question']}{err}")
 
     print(f"\nPer-Query Results:")
     for q in results["per_query"]:
