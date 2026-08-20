@@ -252,11 +252,22 @@ def _generate_answer_async(question: str, idx: int) -> "coroutine":
 
 
 async def _generate_answers_async(questions: list[str]) -> list[dict]:
-    """Gather answers inside one coroutine (asyncio.run needs a coroutine,
-    not the raw Future returned by asyncio.gather)."""
-    return await asyncio.gather(*[
-        _generate_answer_async(q, i) for i, q in enumerate(questions)
-    ])
+    """Gather answers inside one coroutine, capped at RAGAS_ANSWER_CONCURRENCY.
+
+    asyncio.run needs a coroutine, not the raw Future from asyncio.gather.
+    Running all N agents concurrently thrashes SiliconFlow (each answer does
+    10-20 model calls), inflating per-query latency until queries hit the
+    timeout: verified on 2026-08-20 - a query that finishes in 214s solo
+    timed out at 360s under full 10-way concurrency. Pacing via a semaphore
+    (default 2) fixes it; bump with RAGAS_ANSWER_CONCURRENCY.
+    """
+    sem = asyncio.Semaphore(int(os.environ.get("RAGAS_ANSWER_CONCURRENCY", "2")))
+
+    async def _bounded(q: str, i: int) -> dict:
+        async with sem:
+            return await _generate_answer_async(q, i)
+
+    return await asyncio.gather(*[_bounded(q, i) for i, q in enumerate(questions)])
 
 
 # Cache generated answers so metric-only re-runs skip the slow graph phase.
