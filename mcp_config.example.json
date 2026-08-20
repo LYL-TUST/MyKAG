@@ -1,0 +1,16 @@
+# MCP Client Configuration Example
+# Save this to your MCP client config (e.g., Claude Desktop's mcp.json)
+
+{
+  "mcpServers": {
+    "personal-knowledge-agent": {
+      "command": "python",
+      "args": ["-m", "src.mcp.server"],
+      "cwd": "E:/agent-projects/personal-knowledge-agent",
+      "env": {
+        "OBSIDIAN_VAULT_PATH": "E:/agent-projects/obsidian-vault",
+        "PYTHONPATH": "E:/agent-projects/personal-knowledge-agent/src"
+      }
+    }
+  }
+}

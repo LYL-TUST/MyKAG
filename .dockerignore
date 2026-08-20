@@ -1,0 +1,32 @@
+# Python caches / artifacts
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local Qdrant data (rebuilt from vault at runtime)
+qdrant_data/
+qdrant_data_v2/
+_bench_qdrant/
+
+# Secrets / local env (never baked into images)
+.env
+.env.local
+
+# Test suite + benchmark logs (dev-only, not needed in the image)
+tests/
+benchmark_run.log
+benchmark_results.json
+
+# Frontend is built from its own context
+frontend/
+
+# VCS / misc
+.git/
+.github/
+*.md
+docs/

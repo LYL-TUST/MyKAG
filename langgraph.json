@@ -1,0 +1,34 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "knowledge_agent": "./src/agent/knowledge_graph.py:docs_agent",
+    "multi_agent": "./src/agent/multi_agent_graph.py:multi_agent_graph",
+    "supervisor_agent": "./src/agent/supervisor_graph.py:supervisor_graph",
+    "router_agent": "./src/agent/router_graph.py:router_graph"
+  },
+  "env": ".env",
+  "auth": { "path": "./src/api/auth.py:auth", "disable_studio_auth": true },
+  "http": {
+    "app": "./src/api/server.py:app",
+    "cors": {
+      "allow_origins": [
+        "https://smith.langchain.com",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001"
+      ]
+    }
+  },
+  "image_distro": "wolfi",
+  "config": {
+    "recursion_limit": 30
+  },
+  "checkpointer": {
+    "ttl": {
+      "default_ttl": 604800,
+      "sweep_interval_minutes": 60,
+      "strategy": "delete"
+    }
+  }
+}

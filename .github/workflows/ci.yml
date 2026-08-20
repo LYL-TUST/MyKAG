@@ -1,0 +1,47 @@
+# ---------------------------------------------------------------------------
+# Personal Knowledge Agent - CI
+# - test:  run the 86 credential-free unit tests (no API key needed)
+# - docker: verify both images build (catches Dockerfile regressions)
+# Secrets are NOT required for the test job (LLM calls are mocked).
+# ---------------------------------------------------------------------------
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    name: Unit tests (no API key)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install project + test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pytest pytest-cov
+
+      - name: Run unit tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest tests/unit/ -q --cov=src --cov-report=term-missing
+
+  docker:
+    name: Build images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build backend image
+        run: docker build -t pka-backend:ci .
+
+      - name: Build frontend image
+        run: docker build -t pka-frontend:ci ./frontend
