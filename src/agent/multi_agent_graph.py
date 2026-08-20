@@ -39,6 +39,7 @@ from langgraph.graph.message import add_messages
 from src.agent.config import (
     DEFAULT_MODEL,
     GUARDRAILS_MODEL,
+    MODEL_MAX_RETRIES,
     MODEL_REQUEST_TIMEOUT,
     MODELS,
     ModelConfig,
@@ -96,6 +97,7 @@ def _init_model(key_env: str, default: ModelConfig):
         model_provider="openai",
         temperature=0,
         request_timeout=MODEL_REQUEST_TIMEOUT,
+        max_retries=MODEL_MAX_RETRIES,
         **_thinking_kwargs(),
     )
 

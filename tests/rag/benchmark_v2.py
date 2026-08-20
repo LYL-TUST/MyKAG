@@ -307,6 +307,7 @@ async def _run_benchmark_async() -> dict:
         model_provider="openai",
         temperature=0,
         request_timeout=120,
+        max_retries=0,
     )
     print(f"[bench] judge model: {judge_cfg.key} ({judge_cfg.id})", flush=True)
 

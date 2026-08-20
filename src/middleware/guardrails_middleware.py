@@ -106,6 +106,7 @@ class GuardrailsMiddleware(AgentMiddleware[GuardrailsState]):
 
         from src.agent.config import (
             GUARDRAILS_MODEL,
+            MODEL_MAX_RETRIES,
             MODEL_REQUEST_TIMEOUT,
             MODELS,
             _thinking_kwargs,
@@ -138,6 +139,7 @@ class GuardrailsMiddleware(AgentMiddleware[GuardrailsState]):
             model_provider=model_config.provider,
             temperature=0,
             request_timeout=MODEL_REQUEST_TIMEOUT,
+            max_retries=MODEL_MAX_RETRIES,
             **thinking_kwargs,
         )
         self.block_off_topic = block_off_topic

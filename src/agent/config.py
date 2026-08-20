@@ -207,6 +207,13 @@ THINKING_EXTRA_BODY = {"enable_thinking": False} if _DISABLE_THINKING else None
 # makes hung calls fail fast so middleware/benchmark timeouts can act.
 MODEL_REQUEST_TIMEOUT = int(os.getenv("MODEL_REQUEST_TIMEOUT", "120"))
 
+# Disable openai-SDK-level retries: with the SDK default (2 retries) a stalled
+# call times out at 120s then retries twice (another 240s+), and the retry
+# loop swallows asyncio cancellation, so asyncio.wait_for can't break out.
+# Project-level ModelRetryMiddleware still retries, so this only removes the
+# SDK's un-cancellable retry chain.
+MODEL_MAX_RETRIES = int(os.getenv("MODEL_MAX_RETRIES", "0"))
+
 
 def _thinking_kwargs() -> dict:
     """Return the **kwargs fragment to pass thinking toggle into init_chat_model."""
@@ -228,6 +235,7 @@ try:
         model_provider=DEFAULT_MODEL_PROVIDER,
         configurable_fields=("model",),
         request_timeout=MODEL_REQUEST_TIMEOUT,
+        max_retries=MODEL_MAX_RETRIES,
         **_thinking_kwargs(),
     )
 except Exception as exc:  # noqa: BLE001 - intentional: credentials may be absent
@@ -280,6 +288,7 @@ __all__ = [
     # Configurable models
     "configurable_model",
     "MODEL_REQUEST_TIMEOUT",
+    "MODEL_MAX_RETRIES",
     "THINKING_EXTRA_BODY",
     "_thinking_kwargs",
     # Middleware
