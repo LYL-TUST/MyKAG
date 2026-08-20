@@ -208,12 +208,26 @@ def _thinking_kwargs() -> dict:
 
 # Primary configurable model (can be switched at runtime).
 # The runtime uses the LangChain provider name, not the vendor/transport label.
-configurable_model = init_chat_model(
-    model=DEFAULT_MODEL.id,
-    model_provider=DEFAULT_MODEL_PROVIDER,
-    configurable_fields=("model",),
-    **_thinking_kwargs(),
-)
+#
+# Wrapped in try/except so importing this module NEVER fails on missing
+# credentials. In environments without OPENAI_API_KEY (e.g. CI unit tests)
+# the proxy is left as None; any actual .invoke() will then raise a clear
+# error at the call site instead of crashing all module imports.
+try:
+    configurable_model = init_chat_model(
+        model=DEFAULT_MODEL.id,
+        model_provider=DEFAULT_MODEL_PROVIDER,
+        configurable_fields=("model",),
+        **_thinking_kwargs(),
+    )
+except Exception as exc:  # noqa: BLE001 - intentional: credentials may be absent
+    configurable_model = None
+    logger.warning(
+        "configurable_model init skipped (%s: %s); "
+        "set OPENAI_API_KEY for runtime use",
+        exc.__class__.__name__,
+        exc,
+    )
 logger.info(
     "Default model: %s (%s, provider=%s, runtime_provider=%s)",
     DEFAULT_MODEL.name,

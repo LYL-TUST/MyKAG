@@ -1,8 +1,13 @@
 # ---------------------------------------------------------------------------
 # Personal Knowledge Agent - CI
-# - test:  run the 86 credential-free unit tests (no API key needed)
+# - test:  run the 86 unit tests (LLM calls are mocked)
 # - docker: verify both images build (catches Dockerfile regressions)
-# Secrets are NOT required for the test job (LLM calls are mocked).
+# The test job imports `src.agent.config`, which instantiates an OpenAI
+# client at import time. We inject a dummy OPENAI_API_KEY so the client
+# constructs without contacting the network. Set OPENAI_BASE_URL too so
+# any accidental real call would hit SiliconFlow (not api.openai.com).
+# If `OPENAI_API_KEY` is exposed as a GitHub repo secret, prefer that over
+# the literal dummy to mirror production routing.
 # ---------------------------------------------------------------------------
 name: CI
 
@@ -32,6 +37,8 @@ jobs:
       - name: Run unit tests
         env:
           PYTHONPATH: ${{ github.workspace }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || 'sk-dummy-for-mock-only' }}
+          OPENAI_BASE_URL: https://api.siliconflow.cn/v1
         run: python -m pytest tests/unit/ -q --cov=src --cov-report=term-missing
 
   docker:

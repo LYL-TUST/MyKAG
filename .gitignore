@@ -29,9 +29,11 @@ frontend/out/
 frontend/tsconfig.tsbuildinfo
 *.tsbuildinfo
 
-# ---- 评测运行日志 / 原始结果 (报告 .md 可提交, 原始 json 体积大不提交) ----
+# ---- 评测运行日志 / 原始结果 (报告 .md 可提交, 原始 json/jsonl 体积大不提交) ----
 benchmark_run.log
+benchmark_v2_run.log
 tests/rag/benchmark_results.json
+tests/rag/_bench_results.jsonl
 
 # ---- IDE / OS ----
 .idea/
