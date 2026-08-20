@@ -198,7 +198,12 @@ async def _judge(model, question: str, answer: str, expected: str) -> Optional[i
 
 
 def _load_done_set() -> set[tuple[str, str]]:
-    """Return the set of (graph, question) already recorded in JSONL."""
+    """Return the set of (graph, question) already recorded in JSONL.
+
+    Only records with a non-None score count as done: a judge failure
+    (SiliconFlow stall -> wait_for timeout -> score None) must NOT be
+    treated as completed, or a later resume would skip re-judging it.
+    """
     done: set[tuple[str, str]] = set()
     if _JSONL_PATH.is_file():
         for line in _JSONL_PATH.read_text(encoding="utf-8").splitlines():
@@ -207,7 +212,8 @@ def _load_done_set() -> set[tuple[str, str]]:
                 continue
             try:
                 rec = json.loads(line)
-                done.add((rec["graph"], rec["question"]))
+                if rec.get("score") is not None:
+                    done.add((rec["graph"], rec["question"]))
             except Exception:  # noqa: BLE001
                 continue
     return done
