@@ -36,6 +36,7 @@ benchmark_v2_run.log
 ragas_eval_run.log
 tests/rag/benchmark_results.json
 tests/rag/_bench_results.jsonl
+tests/rag/_ragas_answers.json
 
 # ---- IDE / OS ----
 .idea/

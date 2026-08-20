@@ -46,8 +46,9 @@ sys.path.insert(0, str(_PROJECT_ROOT))
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-# Graph answer generation timeout (single agent can be slow on first query).
-PER_QUERY_TIMEOUT = 240
+# Graph answer generation timeout (single agent can be slow on first query;
+# codebase indexing + reranker + deepseek-v4 rounds can exceed 4 min cold).
+PER_QUERY_TIMEOUT = int(os.environ.get("RAGAS_ANSWER_TIMEOUT", "360"))
 
 
 # ---------------------------------------------------------------------------
@@ -195,9 +196,56 @@ async def _generate_answers_async(questions: list[str]) -> list[dict]:
     ])
 
 
+# Cache generated answers so metric-only re-runs skip the slow graph phase.
+_ANSWERS_CACHE = _PROJECT_ROOT / "tests" / "rag" / "_ragas_answers.json"
+
+
+def _load_answer_cache() -> dict:
+    if _ANSWERS_CACHE.is_file():
+        try:
+            import json
+
+            return json.loads(_ANSWERS_CACHE.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            pass
+    return {}
+
+
+def _save_answer_cache(cache: dict) -> None:
+    import json
+
+    _ANSWERS_CACHE.write_text(
+        json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
 def _generate_answers(questions: list[str]) -> list[dict]:
-    """Run the real graph over all questions on a single asyncio loop."""
-    return asyncio.run(_generate_answers_async(questions))
+    """Run the real graph over all questions on a single asyncio loop.
+
+    Caches answers in _ragas_answers.json; questions whose cached answer is
+    non-empty are skipped. Set RAGAS_REFRESH_ANSWERS=1 to regenerate all.
+    """
+    cache = _load_answer_cache()
+    refresh = os.environ.get("RAGAS_REFRESH_ANSWERS", "") == "1"
+    todo = []
+    results: list[dict] = []
+    for i, q in enumerate(questions):
+        cached = cache.get(q)
+        if cached and cached.get("answer") and not refresh:
+            results.append(cached)
+        else:
+            todo.append((i, q))
+            results.append(None)
+
+    if todo:
+        logger.info("Generating answers with knowledge_agent graph (%d new/%d total)...",
+                    len(todo), len(questions))
+        new = asyncio.run(_generate_answers_async([q for _, q in todo]))
+        for (i, q), rec in zip(todo, new):
+            cache[q] = rec
+            results[i] = rec
+        _save_answer_cache(cache)
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -356,13 +404,20 @@ def _run_ragas_evaluation() -> dict:
         # ragas 0.3+: metrics are instances; set llm/embeddings per metric.
         from ragas.embeddings import LangchainEmbeddingsWrapper
         from ragas.llms import LangchainLLMWrapper
+        from ragas.run_config import RunConfig
 
         llm_wrapper = LangchainLLMWrapper(_build_judge_llm()[0])
         emb_wrapper = LangchainEmbeddingsWrapper(_build_embeddings())
         for m in metrics:
             m.llm = llm_wrapper
             m.embeddings = emb_wrapper
-        result = evaluate(dataset, metrics=metrics)
+        # Longer per-job timeout: SiliconFlow occasionally exceeds ragas's
+        # default and one TimeoutError made faithfulness NaN on 2026-08-20.
+        result = evaluate(
+            dataset,
+            metrics=metrics,
+            run_config=RunConfig(timeout=180, max_retries=3),
+        )
         # RagasResult["metric"] returns float mean (0.3) or per-row list (0.4)
         scores = {
             name: round(_to_mean(result[name]), 4) for name in metric_names
