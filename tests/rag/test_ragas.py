@@ -153,13 +153,17 @@ def _run_retrieval(query: str, top_k: int = 5) -> List[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Answer generation via the REAL graph (single Agent, highest quality).
-# GuardrailsMiddleware registers async hooks, so ainvoke must run on one
-# asyncio loop (same constraint as benchmark_v2).
+# Answer generation via the REAL graph.
+# Defaults to the multi_agent workflow (few rounds, ~3, so it completes
+# reliably under slow SiliconFlow bursts). knowledge_agent (single) scores
+# highest but often does 15-20 tool rounds and can exceed the timeout in
+# batch runs. Switch with RAGAS_ANSWER_GRAPH=single|multi|supervisor.
+# GuardrailsMiddleware registers async hooks, so the single agent must run
+# via ainvoke on one asyncio loop (same constraint as benchmark_v2).
 # ---------------------------------------------------------------------------
 
 
-async def _generate_answer_async(question: str, idx: int) -> dict:
+async def _generate_answer_single_async(question: str, idx: int) -> dict:
     from src.agent.knowledge_graph import docs_agent
 
     t0 = time.monotonic()
@@ -186,6 +190,65 @@ async def _generate_answer_async(question: str, idx: int) -> dict:
     except Exception as exc:  # noqa: BLE001
         return {"answer": "", "latency": time.monotonic() - t0,
                 "turns": -1, "error": str(exc)[:200]}
+
+
+async def _generate_answer_workflow_async(
+    graph_name: str, question: str, idx: int
+) -> dict:
+    """multi_agent / supervisor are sync graphs -> run via asyncio.to_thread."""
+    if graph_name == "multi":
+        from src.agent.multi_agent_graph import multi_agent_graph
+
+        def _invoke() -> dict:
+            return multi_agent_graph.invoke(
+                {"query": question},
+                config={"configurable": {"thread_id": f"ragas-{idx}"}},
+            )
+
+        def _turns(final: dict) -> int:
+            return int(final.get("attempts", 0) + 1)
+
+        def _answer(final: dict) -> str:
+            return str(final["messages"][-1].content) if final.get("messages") else ""
+    else:  # supervisor
+        from src.agent.supervisor_graph import supervisor_graph
+
+        def _invoke() -> dict:
+            return supervisor_graph.invoke(
+                {"query": question},
+                config={"configurable": {"thread_id": f"ragas-{idx}"}},
+            )
+
+        def _turns(final: dict) -> int:
+            return int(final.get("iters", 0))
+
+        def _answer(final: dict) -> str:
+            return str(final.get("final", ""))
+
+    t0 = time.monotonic()
+    try:
+        final = await asyncio.wait_for(
+            asyncio.to_thread(_invoke), timeout=PER_QUERY_TIMEOUT
+        )
+        return {
+            "answer": _answer(final),
+            "latency": time.monotonic() - t0,
+            "turns": _turns(final),
+            "error": None,
+        }
+    except asyncio.TimeoutError:
+        return {"answer": "", "latency": time.monotonic() - t0,
+                "turns": -1, "error": "timeout"}
+    except Exception as exc:  # noqa: BLE001
+        return {"answer": "", "latency": time.monotonic() - t0,
+                "turns": -1, "error": str(exc)[:200]}
+
+
+def _generate_answer_async(question: str, idx: int) -> "coroutine":
+    graph = os.environ.get("RAGAS_ANSWER_GRAPH", "multi")
+    if graph == "single":
+        return _generate_answer_single_async(question, idx)
+    return _generate_answer_workflow_async(graph, question, idx)
 
 
 async def _generate_answers_async(questions: list[str]) -> list[dict]:
@@ -412,12 +475,18 @@ def _run_ragas_evaluation() -> dict:
             m.llm = llm_wrapper
             m.embeddings = emb_wrapper
         # Longer per-job timeout: SiliconFlow occasionally exceeds ragas's
-        # default and one TimeoutError made faithfulness NaN on 2026-08-20.
-        result = evaluate(
-            dataset,
-            metrics=metrics,
-            run_config=RunConfig(timeout=180, max_retries=3),
-        )
+        # default 60s job timeout and TimeoutError made faithfulness NaN on
+        # 2026-08-20. Must be set on the WRAPPER itself (evaluate(run_config=)
+        # does not propagate to a pre-configured metric llm).
+        rc = RunConfig(timeout=240, max_retries=3)
+        llm_wrapper = LangchainLLMWrapper(_build_judge_llm()[0])
+        llm_wrapper.run_config = rc
+        emb_wrapper = LangchainEmbeddingsWrapper(_build_embeddings())
+        emb_wrapper.run_config = rc
+        for m in metrics:
+            m.llm = llm_wrapper
+            m.embeddings = emb_wrapper
+        result = evaluate(dataset, metrics=metrics)
         # RagasResult["metric"] returns float mean (0.3) or per-row list (0.4)
         scores = {
             name: round(_to_mean(result[name]), 4) for name in metric_names
