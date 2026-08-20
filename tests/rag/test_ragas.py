@@ -489,7 +489,10 @@ def _run_ragas_evaluation() -> dict:
         # default 60s job timeout and TimeoutError made faithfulness NaN on
         # 2026-08-20. Must be set on the WRAPPER itself (evaluate(run_config=)
         # does not propagate to a pre-configured metric llm).
-        rc = RunConfig(timeout=240, max_retries=3)
+        rc = RunConfig(
+            timeout=int(os.environ.get("RAGAS_JOB_TIMEOUT", "240")),
+            max_retries=3,
+        )
         llm_wrapper = LangchainLLMWrapper(_build_judge_llm()[0])
         llm_wrapper.run_config = rc
         emb_wrapper = LangchainEmbeddingsWrapper(_build_embeddings())
