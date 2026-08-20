@@ -80,14 +80,19 @@ def _prepare_qdrant() -> None:
 
 
 def _ensure_vault_index() -> None:
-    """Initialize vault if not already done."""
-    from src.tools.vault_tools import _init_vault, _vault_retriever
-    if _vault_retriever is None:
+    """Initialize vault if not already done.
+
+    NOTE: must check `vault_tools._vault_retriever` as a module attribute —
+    `from ... import _vault_retriever` binds the value at import time (None),
+    so it would never see the initialized retriever.
+    """
+    from src.tools import vault_tools
+    if vault_tools._vault_retriever is None:
         vault_path = os.environ.get(
             "OBSIDIAN_VAULT_PATH", str(_PROJECT_ROOT.parent / "obsidian-vault")
         )
-        _init_vault(vault_path)
-        if _vault_retriever is None:
+        vault_tools._init_vault(vault_path)
+        if vault_tools._vault_retriever is None:
             raise RuntimeError(
                 f"Vault init failed (vault={vault_path}). "
                 "Check OBSIDIAN_VAULT_PATH and QDRANT_PATH."
@@ -137,10 +142,12 @@ def _check_dataset_coverage() -> dict:
 
 def _run_retrieval(query: str, top_k: int = 5) -> List[dict]:
     """Run retrieval and return context chunks."""
-    from src.tools.vault_tools import _vault_retriever
-    if _vault_retriever is None:
+    from src.tools import vault_tools
+    if vault_tools._vault_retriever is None:
         raise RuntimeError("Vault not initialized")
-    results = _vault_retriever.search(query, top_k=top_k, expand_wikilinks=True)
+    results = vault_tools._vault_retriever.search(
+        query, top_k=top_k, expand_wikilinks=True
+    )
     return results
 
 
@@ -180,11 +187,17 @@ async def _generate_answer_async(question: str, idx: int) -> dict:
                 "turns": -1, "error": str(exc)[:200]}
 
 
+async def _generate_answers_async(questions: list[str]) -> list[dict]:
+    """Gather answers inside one coroutine (asyncio.run needs a coroutine,
+    not the raw Future returned by asyncio.gather)."""
+    return await asyncio.gather(*[
+        _generate_answer_async(q, i) for i, q in enumerate(questions)
+    ])
+
+
 def _generate_answers(questions: list[str]) -> list[dict]:
     """Run the real graph over all questions on a single asyncio loop."""
-    return asyncio.run(asyncio.gather(*[
-        _generate_answer_async(q, i) for i, q in enumerate(questions)
-    ]))
+    return asyncio.run(_generate_answers_async(questions))
 
 
 # ---------------------------------------------------------------------------
@@ -387,8 +400,10 @@ def run_evaluation(use_ragas: bool = True) -> dict:
     from tests.rag.eval_dataset import EVAL_DATASET
 
     _prepare_qdrant()
-    _ensure_vault_index()
+    # Coverage scan must run BEFORE _ensure_vault_index: the indexer holds the
+    # local Qdrant dir open, so a second QdrantClient would hit the file lock.
     _check_dataset_coverage()
+    _ensure_vault_index()
 
     results = {
         "total_queries": len(EVAL_DATASET),

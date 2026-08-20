@@ -9,6 +9,7 @@ from langchain.agents.middleware import SummarizationMiddleware
 from src.agent.config import (
     GUARDRAILS_MODEL,
     GUARDRAILS_MODEL_ID,
+    SUMMARY_MODEL,
     SUMMARY_MODEL_ID,
     configurable_model,
     model_fallback_middleware,
@@ -65,8 +66,12 @@ guardrails_middleware = GuardrailsMiddleware(
 logger.info(f"Guardrails middleware using {GUARDRAILS_MODEL.name}")
 
 # Context summarization middleware
+# NOTE: SummarizationMiddleware calls init_chat_model(model) WITHOUT a
+# provider, so the id must carry a "provider:" prefix ("Qwen/Qwen3-8B" alone
+# cannot be provider-inferred). Build it from SUMMARY_MODEL.provider so a
+# SUMMARY_MODEL_KEY override to another provider still works.
 context_summary_middleware = SummarizationMiddleware(
-    model=SUMMARY_MODEL_ID,
+    model=f"{SUMMARY_MODEL.provider}:{SUMMARY_MODEL_ID}",
     trigger=("tokens", 130_000),
     keep=("tokens", 30_000),
     summary_prompt=context_summary_prompt,
