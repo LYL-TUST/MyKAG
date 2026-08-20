@@ -104,7 +104,7 @@ class GuardrailsMiddleware(AgentMiddleware[GuardrailsState]):
     def __init__(self, model: str | None = None, block_off_topic: bool = True):
         super().__init__()
 
-        from src.agent.config import GUARDRAILS_MODEL, MODELS
+        from src.agent.config import GUARDRAILS_MODEL, MODELS, _thinking_kwargs
 
         if model is None:
             model_config = GUARDRAILS_MODEL
@@ -121,10 +121,18 @@ class GuardrailsMiddleware(AgentMiddleware[GuardrailsState]):
                     model_config.id,
                 )
 
+        # Disable CoT for OpenAI-compatible models (SiliconFlow serves Qwen3/
+        # DeepSeek with thinking ON by default; enable_thinking=false cuts the
+        # guardrails classifier latency roughly in half). Non-OpenAI providers
+        # may reject extra_body, so only pass it through for provider="openai".
+        thinking_kwargs = (
+            _thinking_kwargs() if model_config.provider == "openai" else {}
+        )
         self.llm = init_chat_model(
             model=model_config.id,
             model_provider=model_config.provider,
             temperature=0,
+            **thinking_kwargs,
         )
         self.block_off_topic = block_off_topic
         logger.info(

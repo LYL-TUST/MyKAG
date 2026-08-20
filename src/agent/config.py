@@ -119,7 +119,10 @@ def _get_model_by_key(env_var: str, fallback_key: str) -> ModelConfig:
 
 DEFAULT_MODEL = _get_model_by_key("DEFAULT_MODEL_KEY", "deepseek-v4")
 GUARDRAILS_MODEL = _get_model_by_key("GUARDRAILS_MODEL_KEY", "qwen3-8b")
-SUMMARY_MODEL = MODELS["gpt-5.4-nano"]
+# Context-summarization model (SummarizationMiddleware). gpt-5.4-nano is NOT
+# served on the configured OpenAI-compatible endpoint (SiliconFlow), so default
+# to qwen3-8b; override with SUMMARY_MODEL_KEY.
+SUMMARY_MODEL = _get_model_by_key("SUMMARY_MODEL_KEY", "qwen3-8b")
 
 DEFAULT_MODEL_PROVIDER = "openai"
 GUARDRAILS_MODEL_PROVIDER = "openai"
