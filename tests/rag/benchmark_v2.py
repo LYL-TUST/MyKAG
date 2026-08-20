@@ -439,9 +439,11 @@ def _try_generate_report() -> None:
 def run_benchmark() -> dict:
     # Auto-dump thread stacks if a step hangs (seen 2026-08-20: first run
     # appeared stuck with no output; WARNING-level logging hid the cause).
+    # 720s > PER_QUERY_TIMEOUT(600): let _run_one's wait_for fire first so it
+    # can dump the pending asyncio task stacks before faulthandler kills us.
     import faulthandler
 
-    faulthandler.dump_traceback_later(600, exit=True)
+    faulthandler.dump_traceback_later(720, exit=True)
     _prepare_qdrant()
     _check_dataset_coverage()
     return asyncio.run(_run_benchmark_async())
