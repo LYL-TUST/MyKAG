@@ -279,6 +279,21 @@ def _rebuild_json_from_jsonl() -> int:
 # ---------------------------------------------------------------------------
 
 
+def _task_dump() -> str:
+    """Stack traces of all pending asyncio tasks (diagnoses hangs: the
+    faulthandler dump only shows the loop parked in select, not WHICH
+    await never returned)."""
+    import traceback
+
+    lines: list[str] = []
+    for t in asyncio.all_tasks():
+        if t is not asyncio.current_task():
+            st = t.get_stack()
+            tb = "".join(traceback.format_list(st[-8:])) if st else "  (no stack)"
+            lines.append(f"--- task {t.get_name()!r} done={t.done()} ---\n{tb}")
+    return "\n".join(lines) or "  (no other tasks)"
+
+
 async def _run_one(fn: Callable, query: str, tid: str) -> dict:
     t0 = time.monotonic()
     try:
@@ -286,6 +301,10 @@ async def _run_one(fn: Callable, query: str, tid: str) -> dict:
         return {"answer": answer, "rounds": rounds,
                 "latency": time.monotonic() - t0, "error": None}
     except asyncio.TimeoutError:
+        logging.getLogger(__name__).warning(
+            "TIMEOUT after %.0fs for %s; pending tasks:\n%s",
+            time.monotonic() - t0, tid, _task_dump(),
+        )
         return {"answer": "", "rounds": -1, "latency": time.monotonic() - t0,
                 "error": "timeout"}
     except Exception as exc:  # noqa: BLE001
