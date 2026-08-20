@@ -201,6 +201,12 @@ _DISABLE_THINKING = os.getenv("DISABLE_THINKING", "1").lower() not in {
 # Injected as extra_body (merged into the provider request body). None = no-op.
 THINKING_EXTRA_BODY = {"enable_thinking": False} if _DISABLE_THINKING else None
 
+# Per-request timeout for LLM HTTP calls (seconds). SiliconFlow occasionally
+# stalls a socket indefinitely; the openai SDK default (600s) then wedges the
+# whole event loop in asyncio.select with no cancellation point. A 120s cap
+# makes hung calls fail fast so middleware/benchmark timeouts can act.
+MODEL_REQUEST_TIMEOUT = int(os.getenv("MODEL_REQUEST_TIMEOUT", "120"))
+
 
 def _thinking_kwargs() -> dict:
     """Return the **kwargs fragment to pass thinking toggle into init_chat_model."""
@@ -221,6 +227,7 @@ try:
         model=DEFAULT_MODEL.id,
         model_provider=DEFAULT_MODEL_PROVIDER,
         configurable_fields=("model",),
+        request_timeout=MODEL_REQUEST_TIMEOUT,
         **_thinking_kwargs(),
     )
 except Exception as exc:  # noqa: BLE001 - intentional: credentials may be absent
@@ -272,6 +279,7 @@ __all__ = [
     "ModelConfig",
     # Configurable models
     "configurable_model",
+    "MODEL_REQUEST_TIMEOUT",
     "THINKING_EXTRA_BODY",
     "_thinking_kwargs",
     # Middleware

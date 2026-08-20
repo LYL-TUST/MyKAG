@@ -34,6 +34,7 @@ frontend/tsconfig.tsbuildinfo
 benchmark_run.log
 benchmark_v2_run.log
 benchmark_v3_run.log
+benchmark_v*.log
 ragas_eval_run.log
 ragas_eval_run*.log
 tests/rag/benchmark_results.json
