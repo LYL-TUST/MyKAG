@@ -55,6 +55,10 @@ class SiliconFlowEmbedding(BaseEmbedding):
         client_kwargs: dict = {"api_key": self.api_key}
         if self.api_base:
             client_kwargs["base_url"] = self.api_base
+        # Cap request timeout: a stalled embedding call would otherwise hang
+        # the agent's tool call for the openai SDK default (600s) with no
+        # cancellation point (same failure mode as the chat client).
+        client_kwargs["timeout"] = int(os.environ.get("MODEL_REQUEST_TIMEOUT", "120"))
         self._client = OpenAI(**client_kwargs)
 
         logger.info(
