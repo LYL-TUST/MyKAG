@@ -6,49 +6,49 @@
 
 | 编排模式 | 平均质量分 | 平均延迟 | 平均轮数 | 失败数 |
 |----------|-----------|---------|---------|--------|
-| 单 Agent（knowledge_agent） | 4.00/5 | 124.3s | 11.4 | 1 |
-| 多角色 workflow（multi_agent） | 3.50/5 | 113.2s | 2.9 | 0 |
-| Supervisor 总调度（supervisor_agent） | 3.10/5 | 48.6s | 3.1 | 0 |
+| 单 Agent（knowledge_agent） | 4.30/5 | 91.8s | 10.4 | 0 |
+| 多角色 workflow（multi_agent） | 4.00/5 | 62.5s | 1.5 | 0 |
+| Supervisor 总调度（supervisor_agent） | 4.30/5 | 33.2s | 2.2 | 0 |
 
 ## 逐题明细
 
 | # | 编排模式 | 质量分 | 延迟 | 轮数 | 备注 |
 |---|----------|-------|------|------|------|
-| 1 | 单 Agent（knowledge_agent） | - | 240.4s | -1 | timeout |
-| 2 | 多角色 workflow（multi_agent） | 3/5 | 102.7s | 3 |  |
-| 3 | Supervisor 总调度（supervisor_agent） | 3/5 | 27.1s | 4 |  |
-| 4 | 单 Agent（knowledge_agent） | 5/5 | 134.9s | 14 |  |
-| 5 | 多角色 workflow（multi_agent） | 3/5 | 156.0s | 3 |  |
-| 6 | Supervisor 总调度（supervisor_agent） | 3/5 | 135.4s | 4 |  |
-| 7 | 单 Agent（knowledge_agent） | 5/5 | 130.1s | 12 |  |
-| 8 | 多角色 workflow（multi_agent） | 3/5 | 109.2s | 3 |  |
-| 9 | Supervisor 总调度（supervisor_agent） | 3/5 | 43.9s | 3 |  |
-| 10 | 单 Agent（knowledge_agent） | 4/5 | 140.7s | 14 |  |
-| 11 | 多角色 workflow（multi_agent） | 3/5 | 181.3s | 3 |  |
-| 12 | Supervisor 总调度（supervisor_agent） | 4/5 | 80.6s | 3 |  |
-| 13 | 单 Agent（knowledge_agent） | 4/5 | 133.9s | 17 |  |
-| 14 | 多角色 workflow（multi_agent） | 5/5 | 115.5s | 3 |  |
-| 15 | Supervisor 总调度（supervisor_agent） | 3/5 | 22.7s | 2 |  |
-| 16 | 单 Agent（knowledge_agent） | 4/5 | 15.4s | 4 |  |
-| 17 | 多角色 workflow（multi_agent） | 4/5 | 93.5s | 3 |  |
-| 18 | Supervisor 总调度（supervisor_agent） | 4/5 | 19.7s | 2 |  |
-| 19 | 单 Agent（knowledge_agent） | 4/5 | 116.5s | 7 |  |
-| 20 | 多角色 workflow（multi_agent） | 4/5 | 70.3s | 2 |  |
-| 21 | Supervisor 总调度（supervisor_agent） | 3/5 | 59.7s | 3 |  |
-| 22 | 单 Agent（knowledge_agent） | 3/5 | 42.3s | 12 |  |
-| 23 | 多角色 workflow（multi_agent） | 3/5 | 114.7s | 3 |  |
-| 24 | Supervisor 总调度（supervisor_agent） | 3/5 | 42.0s | 4 |  |
-| 25 | 单 Agent（knowledge_agent） | 3/5 | 56.0s | 15 |  |
-| 26 | 多角色 workflow（multi_agent） | 3/5 | 61.2s | 3 |  |
-| 27 | Supervisor 总调度（supervisor_agent） | 2/5 | 22.0s | 2 |  |
-| 28 | 单 Agent（knowledge_agent） | 4/5 | 232.7s | 20 |  |
-| 29 | 多角色 workflow（multi_agent） | 4/5 | 127.6s | 3 |  |
-| 30 | Supervisor 总调度（supervisor_agent） | 3/5 | 33.3s | 4 |  |
+| 1 | 单 Agent（knowledge_agent） | 4/5 | 129.0s | 13 |  |
+| 2 | 多角色 workflow（multi_agent） | 3/5 | 82.0s | 1 |  |
+| 3 | Supervisor 总调度（supervisor_agent） | 5/5 | 26.7s | 2 |  |
+| 4 | 单 Agent（knowledge_agent） | 5/5 | 287.7s | 8 |  |
+| 5 | 多角色 workflow（multi_agent） | 5/5 | 51.8s | 1 |  |
+| 6 | Supervisor 总调度（supervisor_agent） | 5/5 | 25.4s | 2 |  |
+| 7 | 单 Agent（knowledge_agent） | 5/5 | 188.4s | 14 |  |
+| 8 | Supervisor 总调度（supervisor_agent） | 5/5 | 42.5s | 2 |  |
+| 9 | 多角色 workflow（multi_agent） | 3/5 | 174.9s | 1 |  |
+| 10 | Supervisor 总调度（supervisor_agent） | 4/5 | 99.5s | 2 |  |
+| 11 | 单 Agent（knowledge_agent） | 5/5 | 107.1s | 13 |  |
+| 12 | 多角色 workflow（multi_agent） | 5/5 | 95.7s | 3 |  |
+| 13 | Supervisor 总调度（supervisor_agent） | 5/5 | 38.1s | 2 |  |
+| 14 | 单 Agent（knowledge_agent） | 5/5 | 53.3s | 11 |  |
+| 15 | 多角色 workflow（multi_agent） | 5/5 | 27.3s | 1 |  |
+| 16 | 单 Agent（knowledge_agent） | 5/5 | 9.3s | 3 |  |
+| 17 | 多角色 workflow（multi_agent） | 5/5 | 10.1s | 1 |  |
+| 18 | Supervisor 总调度（supervisor_agent） | 5/5 | 6.5s | 2 |  |
+| 19 | 单 Agent（knowledge_agent） | 3/5 | 45.6s | 12 |  |
+| 20 | 多角色 workflow（multi_agent） | 4/5 | 69.6s | 3 |  |
+| 21 | Supervisor 总调度（supervisor_agent） | 3/5 | 27.7s | 3 |  |
+| 22 | 单 Agent（knowledge_agent） | 3/5 | 22.6s | 9 |  |
+| 23 | 多角色 workflow（multi_agent） | 3/5 | 30.5s | 2 |  |
+| 24 | Supervisor 总调度（supervisor_agent） | 3/5 | 48.2s | 3 |  |
+| 25 | 单 Agent（knowledge_agent） | 3/5 | 26.9s | 7 |  |
+| 26 | 多角色 workflow（multi_agent） | 3/5 | 48.5s | 1 |  |
+| 27 | Supervisor 总调度（supervisor_agent） | 3/5 | 9.8s | 2 |  |
+| 28 | 多角色 workflow（multi_agent） | 4/5 | 34.1s | 1 |  |
+| 29 | Supervisor 总调度（supervisor_agent） | 5/5 | 7.9s | 2 |  |
+| 30 | 单 Agent（knowledge_agent） | 5/5 | 47.7s | 14 |  |
 
 ## 分析结论
 
-- **质量最优**: 单 Agent（knowledge_agent）（4.0/5）
-- **延迟最低**: Supervisor 总调度（supervisor_agent）（48.6s）
+- **质量最优**: 单 Agent（knowledge_agent）（4.3/5）
+- **延迟最低**: Supervisor 总调度（supervisor_agent）（33.2s）
 - **解读**: 多 Agent 编排（workflow / supervisor）通过多轮检索换质量,延迟略高但回答更完整;单 Agent 依赖 prompt 引导,轮数不可控。同一代码库内实现并对比三种编排,体现了对 LangGraph 状态机与multi-agent 模式的深入理解。
 
 ---

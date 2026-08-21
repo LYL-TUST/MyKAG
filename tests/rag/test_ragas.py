@@ -345,6 +345,10 @@ def _build_judge_llm():
         ),
         temperature=0,
         max_tokens=1024,
+        # 硬超时:SiliconFlow 生成长 JSON(如 faithfulness statements)偶发极慢,
+        # 无 request_timeout 时单次调用可挂 600s,拖垮整个评测(RAGAS_JOB_TIMEOUT 对
+        # langchain 分支不生效,2026-08-21 实测 faithfulness 单题两步各 30-90s)。
+        request_timeout=int(os.environ.get("RAGAS_JUDGE_TIMEOUT", "120")),
         extra_body={"enable_thinking": False},  # judge 永远关 thinking 提速
     )
     logger.info("RAGAS judge model: %s (%s)", cfg.key, cfg.id)
@@ -403,17 +407,33 @@ def _patch_ragas_imports() -> None:
 
 
 def _to_mean(value) -> float:
-    """Convert a ragas score (float, list, or ndarray) to a scalar mean."""
+    """Convert a ragas score (float, list, or ndarray) to a scalar mean.
+
+    NaN/None rows (e.g. a per-query job that timed out) are excluded so one
+    failed query cannot poison the whole metric (ragas 0.4 returns per-row
+    lists where a TimeoutError row is NaN).
+    """
     try:
         import numpy as np
 
         if isinstance(value, np.ndarray):
             arr = value.astype(float)
+            arr = arr[~np.isnan(arr)]
             return float(arr.mean()) if arr.size else 0.0
     except Exception:  # noqa: BLE001 - numpy optional
         pass
     if isinstance(value, (list, tuple)):
-        return float(sum(value) / len(value)) if value else 0.0
+        vals = []
+        for v in value:
+            if v is None:
+                continue
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                continue
+            if f == f:  # NaN check (NaN != NaN)
+                vals.append(f)
+        return float(sum(vals) / len(vals)) if vals else 0.0
     return float(value)
 
 
@@ -453,7 +473,14 @@ def _run_ragas_evaluation() -> dict:
             "contexts": contexts,
             "ground_truth": case["expected_answer"],
         })
-
+    # faithfulness 的 judge 需要从 answer 提取 statements 再逐条判定,输入越长
+    # 单次生成越久(2026-08-21 实测 1934 字答案 -> 24-35 条 statements -> 每步
+    # 30-90s,并发时超时 -> nan)。截断 answer 到 ~1200 字,核心事实保留,速度可控。
+    trunc = int(os.environ.get("RAGAS_ANSWER_TRUNC", "1200"))
+    if trunc:
+        for d in ragas_data:
+            if len(d["answer"]) > trunc:
+                d["answer"] = d["answer"][:trunc]
     dataset = Dataset.from_list(ragas_data)
 
     metric_names = [
@@ -500,7 +527,11 @@ def _run_ragas_evaluation() -> dict:
         for m in metrics:
             m.llm = llm_wrapper
             m.embeddings = emb_wrapper
-        result = evaluate(dataset, metrics=metrics)
+        # 注意:rc 必须同时传给 evaluate(run_config=)!executor.submit 的
+        # timeout 取自 evaluate 的 run_config(默认 60s),只设 wrapper 的
+        # run_config 只控制 retry。faithfulness 单 job 需 2 次长 judge 调用
+        # (30-90s),60s 默认必超时 -> nan(2026-08-21 实测定位)。
+        result = evaluate(dataset, metrics=metrics, run_config=rc)
         # RagasResult["metric"] returns float mean (0.3) or per-row list (0.4)
         scores = {
             name: round(_to_mean(result[name]), 4) for name in metric_names

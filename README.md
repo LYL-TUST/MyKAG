@@ -247,6 +247,17 @@ cd frontend && npm install && npm run dev:local
 - **检索消融**：`python tests/rag/ablation.py`（纯向量 vs 纯 BM25 vs 混合 RRF vs 完整管线）
 - **编排对比**：`python tests/rag/benchmark_graphs.py`（三种编排模式的质量 / 延迟 / 轮数），结果由 `report_benchmark.py` 生成 `docs/agent_benchmark.md`
 
+### 评测结果（SiliconFlow 实测）
+
+| 维度 | 结果 |
+|------|------|
+| 编排质量（LLM-judge 1-5，10 题） | 单 Agent **4.3** · 多角色 workflow **4.0** · Supervisor **4.3**（30/30 全跑通，0 失败） |
+| 编排延迟（平均） | 单 Agent 94.6s · 多角色 71.0s · **Supervisor 32.3s** |
+| RAGAS 指标（10 题） | faithfulness 0.44 · answer_relevancy 0.62 · context_precision 0.73 · context_recall 0.50 |
+| 检索命中率（Recall@5） | **90%**（混合 RRF + reranker，消融实验见 `docs/evaluation.md`） |
+
+> 编排评测：`python tests/rag/benchmark_v2.py`（断点续跑 + 即跑即存，跑完自动生成报告）；RAGAS：`python tests/rag/test_ragas.py --ragas`
+
 ## 量化数据
 
 | 指标 | 数据 |
