@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import types
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -237,3 +238,78 @@ def test_run_workflow_timeout_message(monkeypatch) -> None:
     elapsed = time.monotonic() - start
     assert elapsed < 5, "超时保护必须快速返回"
     assert "超时" in out["answer"]
+
+
+# ---------------------------------------------------------------------------
+# Semantic cache (2026-08-21 optimization)
+# ---------------------------------------------------------------------------
+
+
+def test_check_cache_node_hit(monkeypatch) -> None:
+    """Cache hit short-circuits with the cached answer + mode."""
+    monkeypatch.setattr(
+        rg, "_sem_cache",
+        types.SimpleNamespace(
+            get=lambda q: {"answer": "缓存答案", "mode": "single", "similarity": 0.95}
+        ),
+    )
+    state = rg.check_cache_node(
+        {"messages": [{"role": "user", "content": "ellie 支持哪些 LLM 后端"}]}
+    )
+    assert state["cache_hit"] is True
+    assert state["answer"] == "缓存答案"
+    assert state["mode"] == "single"
+
+
+def test_check_cache_node_miss(monkeypatch) -> None:
+    """Cache miss falls through to classification."""
+    monkeypatch.setattr(rg, "_sem_cache", types.SimpleNamespace(get=lambda q: None))
+    state = rg.check_cache_node(
+        {"messages": [{"role": "user", "content": "ellie 支持哪些 LLM 后端"}]}
+    )
+    assert state["cache_hit"] is False
+    assert "answer" not in state
+
+
+def test_answer_node_put_cache_on_miss(monkeypatch) -> None:
+    """A normal (non-cached) answer is written back to the cache."""
+    puts: list = []
+    monkeypatch.setattr(
+        rg, "_sem_cache", types.SimpleNamespace(put=lambda q, a, m: puts.append((q, a, m)))
+    )
+    state = rg.answer_node(
+        {
+            "messages": [{"role": "user", "content": "测试问题"}],
+            "answer": "回答内容",
+            "mode": "single",
+        }
+    )
+    assert len(puts) == 1
+    assert puts[0] == ("测试问题", "回答内容", "single")
+    assert state["messages"][0].content.startswith("[编排模式: single]")
+
+
+def test_answer_node_skip_cache_on_hit(monkeypatch) -> None:
+    """A cache hit must NOT re-put itself (avoids refresh loops)."""
+    puts: list = []
+    monkeypatch.setattr(
+        rg, "_sem_cache", types.SimpleNamespace(put=lambda q, a, m: puts.append((q, a, m)))
+    )
+    state = rg.answer_node(
+        {
+            "messages": [{"role": "user", "content": "测试问题"}],
+            "answer": "回答内容",
+            "mode": "single",
+            "cache_hit": True,
+        }
+    )
+    assert puts == []
+    assert state["messages"][0].content.startswith("[缓存命中]")
+
+
+def test_fast_path_expanded_meta() -> None:
+    """2026-08-21 fast-path expansion: more greetings/meta hit fast."""
+    for q in ("你能做什么", "你会什么", "好的", "嗯", "你怎么用"):
+        assert rg._is_meta(q), f"expected meta: {q}"
+    for q in ("ellie 支持哪些 LLM 后端", "什么是知识图谱", "统计笔记数量"):
+        assert not rg._is_meta(q), f"expected NOT meta: {q}"

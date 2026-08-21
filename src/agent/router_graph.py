@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import uuid
 from typing import Annotated, Optional, TypedDict
 
@@ -34,6 +35,7 @@ from langgraph.graph.message import add_messages
 
 from src.agent.config import GUARDRAILS_MODEL
 from src.agent.multi_agent_graph import _init_model, _llm_json
+from src.agent.semantic_cache import SemanticAnswerCache
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +48,18 @@ DEFAULT_MODE = "single"
 
 # Meta / trivial 问题(问候、自我介绍、极短输入)——直接走轻模型 fast path,
 # 跳过 router LLM 分类 + guardrails + RAG + 主模型思考链,首字延迟从 20s+ 降到 ~4s。
+# 只收录"寒暄/关于助手自身"的确定性元问题;事实查询(如"ellie 支持哪些模型")
+# 不能走 fast(不检索会答错),留给规则/LLM 通道路由到检索模式。
 _META_PATTERNS = (
     "你是谁", "你叫什么", "你是什么", "介绍下你自己", "介绍一下你",
     "你好", "您好", "hi", "hello", "在吗", "谢谢", "再见", "早上好", "晚上好",
+    # fast path 扩面:助手元问题/寒暄(2026-08-21 优化)
+    "你能做什么", "你会什么", "你有什么功能", "你能帮我做什么", "你怎么用",
+    "你是用什么做的", "谁做的你", "谁开发你", "你厉害吗", "你真棒", "你好棒",
+    "好的", "好", "嗯", "行", "哦", "明白", "知道了", "不错", "哈哈", "可以的",
 )
-_META_MAX_LEN = 6  # 极短输入(≤6 字符)也按 meta 处理
+_META_MAX_LEN = 3  # 极短输入(≤3 字符,如 "?")按 meta 处理;再长留给规则/LLM 分类,
+# 避免 "统计笔记数量" 这类 4-6 字实质问题被误判为寒暄(2026-08-21 收紧)
 _FAST_SYSTEM = "你是个人知识助手。用中文简短友好地回答用户的问候或简单问题,不超过两句话。"
 
 # 子 graph 运行超时(秒)——防止无结果问题让 Agent 无限重试
@@ -59,6 +68,14 @@ MULTI_TIMEOUT = 240  # multi_agent / supervisor_agent(sync,超时后线程残留
 TIMEOUT_MESSAGE = "⚠️ 处理超时(超过{timeout}s),未能完成检索。请稍后重试或换个问法。"
 
 _router_model = _init_model("ROUTER_MODEL_KEY", GUARDRAILS_MODEL)
+
+# 语义缓存:重复/相似问题直接返回历史答案(一次 embedding ~0.5s,免去 30-95s
+# 完整编排)。阈值/容量/TTL 可用 env 覆盖,命中时走 "answer" 短路。
+_sem_cache = SemanticAnswerCache(
+    capacity=int(os.environ.get("SEM_CACHE_CAPACITY", "256")),
+    threshold=float(os.environ.get("SEM_CACHE_THRESHOLD", "0.92")),
+    ttl_seconds=int(os.environ.get("SEM_CACHE_TTL", "86400")),
+)
 
 # 规则通道关键词(简单/统计/复杂 三档)
 _SINGLE_HINTS = ("是什么", "什么是", "怎么", "如何", "为什么", "解释", "介绍", "含义")
@@ -89,8 +106,9 @@ class RouterState(TypedDict, total=False):
     """State for the entry router graph."""
 
     query: str  # 原始用户问题
-    mode: str  # single | workflow | supervisor
+    mode: str  # single | workflow | supervisor | fast
     answer: str  # 子 graph 的输出
+    cache_hit: bool  # 语义缓存命中(直接短路到 answer)
     messages: Annotated[list, add_messages]  # 最终回答(AIMessage)
 
 
@@ -189,6 +207,25 @@ def classify_node(state: RouterState) -> dict:
     mode = _classify(query)
     logger.info("Router classified mode=%s", mode)
     return {"mode": mode}
+
+
+def check_cache_node(state: RouterState) -> dict:
+    """Semantic-cache lookup: a hit short-circuits the whole orchestration.
+
+    Runs BEFORE classification so repeated questions skip every LLM call
+    (one embedding request ~0.5s instead of 30-95s of graph work).
+    """
+    query = _extract_query(state)
+    if not query:
+        return {"cache_hit": False}
+    hit = _sem_cache.get(query)
+    if hit:
+        return {
+            "answer": hit["answer"],
+            "mode": hit["mode"],
+            "cache_hit": True,
+        }
+    return {"cache_hit": False}
 
 
 async def run_fast_node(state: RouterState) -> dict:
@@ -301,10 +338,20 @@ async def run_supervisor_node(state: RouterState) -> dict:
 
 
 def answer_node(state: RouterState) -> dict:
-    """Emit the final answer tagged with the orchestration mode used."""
+    """Emit the final answer tagged with the orchestration mode used.
+
+    Non-cache-hits are written back into the semantic cache so the next
+    (near-)identical question is answered instantly.
+    """
     mode = state.get("mode", DEFAULT_MODE)
     answer = state.get("answer", "") or "未生成回答"
-    body = f"[编排模式: {mode}]\n\n{answer}"
+    cache_hit = state.get("cache_hit", False)
+    if not cache_hit:
+        q = _extract_query(state)
+        if q and answer and answer != "未生成回答":
+            _sem_cache.put(q, answer, mode)
+    tag = "[缓存命中]" if cache_hit else f"[编排模式: {mode}]"
+    body = f"{tag}\n\n{answer}"
     return {"messages": [AIMessage(content=body)]}
 
 
@@ -325,6 +372,7 @@ def _route(state: RouterState) -> str:
 # ---------------------------------------------------------------------------
 
 _builder = StateGraph(RouterState)
+_builder.add_node("check_cache", check_cache_node)
 _builder.add_node("classify", classify_node)
 _builder.add_node("run_fast", run_fast_node)
 _builder.add_node("run_single", run_single_node)
@@ -332,7 +380,12 @@ _builder.add_node("run_workflow", run_workflow_node)
 _builder.add_node("run_supervisor", run_supervisor_node)
 _builder.add_node("answer", answer_node)
 
-_builder.add_edge(START, "classify")
+_builder.add_edge(START, "check_cache")
+_builder.add_conditional_edges(
+    "check_cache",
+    lambda s: "answer" if s.get("cache_hit") else "classify",
+    {"answer": "answer", "classify": "classify"},
+)
 _builder.add_conditional_edges(
     "classify",
     _route,
@@ -352,7 +405,7 @@ _builder.add_edge("answer", END)
 router_graph = _builder.compile()
 
 logger.info(
-    "Router graph compiled: classify -> fast|single|workflow|supervisor -> answer"
+    "Router graph compiled: check_cache -> fast|single|workflow|supervisor -> answer"
 )
 
 __all__ = [
@@ -362,12 +415,15 @@ __all__ = [
     "DEFAULT_MODE",
     "SINGLE_TIMEOUT",
     "MULTI_TIMEOUT",
+    "SemanticAnswerCache",
+    "_sem_cache",
     # classifier (unit-testable)
     "_classify",
     "_classify_by_rules",
     "_classify_by_llm",
     "_is_meta",
     # nodes
+    "check_cache_node",
     "classify_node",
     "run_fast_node",
     "run_single_node",

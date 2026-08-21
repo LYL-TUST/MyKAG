@@ -251,11 +251,15 @@ cd frontend && npm install && npm run dev:local
 
 | 维度 | 结果 |
 |------|------|
-| 编排质量（LLM-judge 1-5，10 题） | 单 Agent **4.3** · 多角色 workflow **4.0** · Supervisor **4.3**（30/30 全跑通，0 失败） |
-| 编排延迟（平均） | 单 Agent 94.6s · 多角色 71.0s · **Supervisor 32.3s** |
+| 编排质量（LLM-judge 1-5，10 题） | 单 Agent **3.8** · 多角色 workflow **4.1** · Supervisor **4.2**（30/30 全跑通，0 失败） |
+| 编排延迟（平均，已优化） | 单 Agent **31.5s** · 多角色 **44.5s** · **Supervisor 16.7s**（优化前 94.6/71.0/32.3s，总延迟 **-53%**） |
+| 单 Agent 轮数 | 11.1 轮 → **1.0 轮**（快模型 + 命中即答 + 轮数上限） |
+| 重复问题 | 语义缓存命中 **0.1s**（冷调用 44.4s → 热调用 0.1s） |
 | RAGAS 指标（10 题） | faithfulness 0.44 · answer_relevancy 0.62 · context_precision 0.73 · context_recall 0.50 |
 | 检索命中率（Recall@5） | **90%**（混合 RRF + reranker，消融实验见 `docs/evaluation.md`） |
 
+> 性能优化（2026-08）：Agent 工具循环切 Qwen3-8B 快模型（`AGENT_MODEL_KEY` 可切回）、单 Agent 轮数上限 + 命中即答（`AGENT_MAX_ROUNDS`）、Router 入口语义缓存（`SEM_CACHE_*`，相似问题秒回）、前端流式输出子图 token。质量-延迟权衡如实记录于 `docs/agent_benchmark.md`。
+>
 > 编排评测：`python tests/rag/benchmark_v2.py`（断点续跑 + 即跑即存，跑完自动生成报告）；RAGAS：`python tests/rag/test_ragas.py --ragas`
 
 ## 量化数据

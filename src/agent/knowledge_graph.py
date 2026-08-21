@@ -7,10 +7,12 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import SummarizationMiddleware
 
 from src.agent.config import (
+    AGENT_MODEL,
     GUARDRAILS_MODEL,
     GUARDRAILS_MODEL_ID,
     SUMMARY_MODEL,
     SUMMARY_MODEL_ID,
+    agent_model,
     configurable_model,
     model_fallback_middleware,
     model_retry_middleware,
@@ -104,12 +106,22 @@ if model_fallback_middleware is not None:
     knowledge_agent_middleware.append(model_fallback_middleware)
 
 # Create the agent
+# 工具循环走快模型(agent_model,默认 qwen3-8b ~2s/次;env AGENT_MODEL_KEY 可切回
+# deepseek-v4)。工具循环模型只负责"决定调哪个工具/读哪篇笔记",快模型足够,
+# 慢模型留给最终长回答(路由层)。若快模型初始化失败(无 key 等)回退 configurable_model。
 docs_agent = create_agent(
-    model=configurable_model,
+    model=agent_model or configurable_model,
     tools=knowledge_agent_tools,
     system_prompt=docs_agent_prompt,
     middleware=knowledge_agent_middleware,
 )
+
+# 轮数上限:create_agent 没有 max_iterations 参数,用 recursion_limit 限制
+# 图执行节点总数(每轮 ≈ model 节点 + tools 节点 2 个节点)。默认 4 轮
+# (recursion_limit=10),env AGENT_MAX_ROUNDS 可调;配合 prompt 的"命中即答"
+# 规则,把 benchmark 实测的 11 轮收敛到 3-4 轮,94.6s -> ~30s。
+AGENT_MAX_ROUNDS = int(os.getenv("AGENT_MAX_ROUNDS", "4"))
+_AGENT_RECURSION_LIMIT = 2 + max(AGENT_MAX_ROUNDS, 1) * 2  # START + 每轮 2 节点 + END
 
 # Attach runtime info for LangGraph Studio
 _prompt_metadata: dict[str, str] = {
@@ -123,7 +135,10 @@ if guardrails_prompt_commit:
 if _revision_id := os.environ.get("LANGCHAIN_REVISION_ID"):
     _prompt_metadata["LANGSMITH_AGENT_VERSION"] = _revision_id
 
-docs_agent = docs_agent.with_config(metadata=_prompt_metadata)
+docs_agent = docs_agent.with_config(
+    recursion_limit=_AGENT_RECURSION_LIMIT,
+    metadata=_prompt_metadata,
+)
 docs_agent.tools = knowledge_agent_tools
 docs_agent.middleware = knowledge_agent_middleware
 

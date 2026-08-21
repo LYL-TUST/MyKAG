@@ -254,6 +254,38 @@ logger.info(
     DEFAULT_MODEL_PROVIDER,
 )
 
+# ---------------------------------------------------------------------------
+# Fast agent model (tool-loop worker)
+# ---------------------------------------------------------------------------
+# The single-Agent tool loop calls the model once per round; a slow model
+# (deepseek-v4 ~9s/call) makes 8-11 rounds balloon to 90s+. Route the tool
+# loop to a fast model by default (qwen3-8b ~2s/call) and keep deepseek for
+# final long-form answers. Override with AGENT_MODEL_KEY to opt out.
+AGENT_MODEL = _get_model_by_key("AGENT_MODEL_KEY", "qwen3-8b")
+
+try:
+    agent_model = init_chat_model(
+        model=AGENT_MODEL.id,
+        model_provider=DEFAULT_MODEL_PROVIDER,
+        configurable_fields=("model",),
+        request_timeout=MODEL_REQUEST_TIMEOUT,
+        max_retries=MODEL_MAX_RETRIES,
+        **_thinking_kwargs(),
+    )
+except Exception as exc:  # noqa: BLE001 - credentials may be absent (CI)
+    agent_model = None
+    logger.warning(
+        "agent_model init skipped (%s: %s); falling back to configurable_model",
+        exc.__class__.__name__,
+        exc,
+    )
+logger.info(
+    "Agent tool-loop model: %s (%s, provider=%s)",
+    AGENT_MODEL.name,
+    AGENT_MODEL.id,
+    AGENT_MODEL.provider,
+)
+
 # =============================================================================
 # Middleware
 # =============================================================================
@@ -287,6 +319,8 @@ __all__ = [
     "ModelConfig",
     # Configurable models
     "configurable_model",
+    "AGENT_MODEL",
+    "agent_model",
     "MODEL_REQUEST_TIMEOUT",
     "MODEL_MAX_RETRIES",
     "THINKING_EXTRA_BODY",

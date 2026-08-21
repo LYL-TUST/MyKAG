@@ -40,7 +40,8 @@ def build_report(data: dict) -> str:
     lines.append("# 三种 Agent 编排模式对比评测\n")
     lines.append(
         f"> 数据集: 10 条带 ground-truth 的 Q&A（`tests/rag/eval_dataset.py`） · "
-        f"质量分由 LLM-as-judge 按标准答案评分（1-5）· 实测环境: SiliconFlow / DeepSeek V4\n"
+        f"质量分由 LLM-as-judge 按标准答案评分（1-5）· 实测环境: SiliconFlow"
+        f"（Agent 工具循环 Qwen3-8B / 主回答 DeepSeek V4 / judge Qwen3-8B）\n"
     )
 
     # ---- summary table ----
