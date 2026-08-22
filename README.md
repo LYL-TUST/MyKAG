@@ -41,24 +41,21 @@
 
 ## 截图
 
-> **待补充**：将真实运行截图放入 `docs/screenshots/` 并替换下方图片路径。
-> 建议截图清单（点击查看拍摄要点）：
+![聊天问答界面](docs/screenshots/chat.png)
 
-| # | 截图 | 说明 |
-|---|------|------|
-| 1 | `docs/screenshots/chat.png` | 聊天问答界面（问题 + 带来源引用的回答） |
-| 2 | `docs/screenshots/graph.png` | 知识图谱可视化（笔记 [[wikilink]] 关系网） |
-| 3 | `docs/screenshots/notes.png` | 笔记浏览（列表 / 详情 / 标签） |
-| 4 | `docs/screenshots/benchmark.png` | 三种编排模式评测对比（质量分 / 延迟 / 轮数） |
-| 5 | `docs/screenshots/mcp.png` | MCP 工具接入外部 Agent（Claude Desktop / Cursor） |
+![知识图谱可视化](docs/screenshots/graph.png)
 
-```markdown
-<!-- 替换为你的真实截图 -->
-![聊天界面](docs/screenshots/chat.png)
-![知识图谱](docs/screenshots/graph.png)
-![笔记浏览](docs/screenshots/notes.png)
-![评测对比](docs/screenshots/benchmark.png)
-```
+![三种编排模式评测对比](docs/screenshots/benchmark.png)
+
+> 待补充：`notes.png`（笔记浏览）、`mcp.png`（MCP 工具接入外部 Agent）—— 见下方截图清单。
+
+| # | 截图 | 说明 | 状态 |
+|---|------|------|------|
+| 1 | `docs/screenshots/chat.png` | 聊天问答界面（问题 + 带来源引用的回答） | ✅ 已提供 |
+| 2 | `docs/screenshots/graph.png` | 知识图谱可视化（笔记 [[wikilink]] 关系网） | ✅ 已提供 |
+| 3 | `docs/screenshots/notes.png` | 笔记浏览（列表 / 详情 / 标签） | ⏳ 待补充 |
+| 4 | `docs/screenshots/benchmark.png` | 三种编排模式评测对比（质量分 / 延迟 / 轮数） | ✅ 已提供 |
+| 5 | `docs/screenshots/mcp.png` | MCP 工具接入外部 Agent（Claude Desktop / Cursor） | ⏳ 待补充 |
 
 ## 技术栈
 
