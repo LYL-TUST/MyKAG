@@ -59,3 +59,5 @@ test_spawn.py
 test_spawn2.py
 test_user.py
 verify_patch.py
+langgraph_dev*.log
+ps_*.csv

@@ -63,8 +63,10 @@ def test_ttl_expiry(monkeypatch):
     cache = _mk_cache(monkeypatch, ttl_seconds=1)
     cache.put("q1", "a1", "single")
     assert cache.get("q1") is not None
-    # Simulate time passing beyond TTL.
+    # Simulate time passing beyond TTL in BOTH layers (exact LRU + semantic).
     for e in cache._entries:
+        e["ts"] -= 2
+    for e in cache._exact.values():
         e["ts"] -= 2
     assert cache.get("q1") is None
 

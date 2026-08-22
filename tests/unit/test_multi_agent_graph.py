@@ -140,9 +140,14 @@ def test_critic_judge_llm_unavailable_defaults_sufficient(monkeypatch) -> None:
 
 
 def test_route_loop_and_cap() -> None:
-    """Unsatisfied + under cap -> rewrite; otherwise -> answer."""
+    """Unsatisfied + under cap -> rewrite; otherwise -> answer.
+
+    MAX_LOOP_ATTEMPTS=1 (2026-08-21 延迟优化):最多 rewrite 重试 1 轮,
+    attempts>=1 即出答案,空检索问题不再做第二次全量重检索。
+    """
+    assert mag.MAX_LOOP_ATTEMPTS == 1
     assert mag._route_after_critique({"satisfied": False, "attempts": 0}) == "rewrite"
-    assert mag._route_after_critique({"satisfied": False, "attempts": 1}) == "rewrite"
+    assert mag._route_after_critique({"satisfied": False, "attempts": 1}) == "answer"
     assert mag._route_after_critique({"satisfied": False, "attempts": 2}) == "answer"
     assert mag._route_after_critique({"satisfied": True, "attempts": 0}) == "answer"
 

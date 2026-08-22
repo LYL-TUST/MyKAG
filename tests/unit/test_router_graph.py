@@ -313,3 +313,102 @@ def test_fast_path_expanded_meta() -> None:
         assert rg._is_meta(q), f"expected meta: {q}"
     for q in ("ellie 支持哪些 LLM 后端", "什么是知识图谱", "统计笔记数量"):
         assert not rg._is_meta(q), f"expected NOT meta: {q}"
+
+
+# ---------------------------------------------------------------------------
+# RAG 并行预取 (2026-08-22, Tier 1.1)
+# ---------------------------------------------------------------------------
+
+
+def test_prefetch_retrieval_formats_results(monkeypatch) -> None:
+    """Prefetch formats top-5 chunks into a compact text block."""
+    fake_retriever = types.SimpleNamespace(
+        search=lambda **kw: [
+            {
+                "title": "Note A",
+                "note_name": "note-a",
+                "text": "内容A" * 300,  # > 600 chars, gets truncated
+                "score": 0.9,
+            },
+            {"title": "Note B", "note_name": "note-b", "text": "内容B"},
+        ],
+    )
+    monkeypatch.setattr("src.tools.vault_tools._vault_retriever", fake_retriever)
+    monkeypatch.setattr("src.tools.vault_tools._init_vault", lambda *a, **k: None)
+    out = rg._prefetch_retrieval("测试查询")
+    assert out is not None
+    assert "Note A" in out and "Note B" in out
+    assert len(out) < 2000  # 截断生效
+
+
+def test_prefetch_retrieval_none_on_empty(monkeypatch) -> None:
+    fake_retriever = types.SimpleNamespace(search=lambda **kw: [])
+    monkeypatch.setattr("src.tools.vault_tools._vault_retriever", fake_retriever)
+    monkeypatch.setattr("src.tools.vault_tools._init_vault", lambda *a, **k: None)
+    assert rg._prefetch_retrieval("无结果查询") is None
+
+
+def test_prefetch_retrieval_none_on_error(monkeypatch) -> None:
+    """Retriever raising must degrade to None, never propagate."""
+
+    def boom(**kw):
+        raise RuntimeError("qdrant locked")
+
+    monkeypatch.setattr(
+        "src.tools.vault_tools._vault_retriever",
+        types.SimpleNamespace(search=boom),
+    )
+    monkeypatch.setattr("src.tools.vault_tools._init_vault", lambda *a, **k: None)
+    assert rg._prefetch_retrieval("会报错的查询") is None
+
+
+def test_classify_node_parallel_prefetch(monkeypatch) -> None:
+    """No rule signal -> LLM classify + parallel prefetch, both land in state."""
+    monkeypatch.setattr(rg, "_llm_json", lambda *a, **k: {"mode": "single"})
+    monkeypatch.setattr(
+        rg, "_prefetch_retrieval", lambda q: "### 1. 预取笔记\n内容",
+    )
+    state = rg.classify_node({"query": "A 和 B 有什么区别"})
+    assert state["mode"] == "single"
+    assert "预取笔记" in (state.get("prefetch") or "")
+
+
+def test_classify_node_rule_hits_skip_prefetch(monkeypatch) -> None:
+    """Rule-hitting queries return immediately, no prefetch thread spawned."""
+    called = {"n": 0}
+    monkeypatch.setattr(
+        rg,
+        "_prefetch_retrieval",
+        lambda q: called.__setitem__("n", called["n"] + 1) or "x",
+    )
+    monkeypatch.setattr(rg, "_llm_json", lambda *a, **k: {"mode": "single"})
+    state = rg.classify_node({"query": "什么是知识图谱"})
+    assert state["mode"] == "single"
+    assert called["n"] == 0  # 规则命中不预取
+    assert state.get("prefetch") is None
+
+
+def test_run_single_injects_prefetch(monkeypatch) -> None:
+    """Prefetch present -> injected as leading system message."""
+    import asyncio
+
+    captured: dict = {}
+
+    async def fake_ainvoke(payload, config=None):
+        captured["messages"] = payload.get("messages")
+        return {"messages": [types.SimpleNamespace(content="最终回答")]}
+
+    monkeypatch.setattr(rg, "_extract_query", lambda s: "A 和 B 有什么区别")
+    monkeypatch.setattr(
+        "src.agent.knowledge_graph.docs_agent",
+        types.SimpleNamespace(ainvoke=fake_ainvoke),
+    )
+
+    state = asyncio.run(
+        rg.run_single_node({"query": "A 和 B 有什么区别", "prefetch": "### 1. 预取\n内容"})
+    )
+    assert state["answer"] == "最终回答"
+    msgs = captured["messages"]
+    assert msgs[0]["role"] == "system"
+    assert "预检索结果" in msgs[0]["content"]
+    assert msgs[-1]["role"] == "user"

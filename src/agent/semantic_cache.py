@@ -18,13 +18,22 @@ import logging
 import math
 import os
 import time
+from collections import OrderedDict
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
 
 class SemanticAnswerCache:
-    """In-memory semantic cache: query embedding -> stored answer."""
+    """In-memory semantic cache: query embedding -> stored answer.
+
+    Two lookup layers:
+    1. **Exact LRU layer** (0ms): normalized string match in an OrderedDict.
+       Repeated questions in the same session hit instantly with zero network
+       calls — no embedding request, no cosine scan.
+    2. **Semantic layer** (~0.5s): bge-m3 embedding + cosine similarity scan,
+       catches near-duplicate phrasings. Only reached on exact-LRU miss.
+    """
 
     def __init__(
         self,
@@ -38,8 +47,46 @@ class SemanticAnswerCache:
         self.ttl = ttl_seconds
         self.model = model
         self._entries: list[dict[str, Any]] = []
+        self._exact: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._client: Any = None
         self._embed_failures = 0
+
+    # -- exact LRU layer ---------------------------------------------------
+
+    @staticmethod
+    def _normalize(query: str) -> str:
+        """Normalize a query for exact matching (case/whitespace-insensitive)."""
+        return " ".join(query.strip().lower().split())
+
+    def _exact_get(self, query: str) -> Optional[dict[str, Any]]:
+        """Exact-LRU lookup: O(1) OrderedDict hit or None.
+
+        On hit, re-inserts the key at the tail to keep LRU order and checks TTL.
+        """
+        norm = self._normalize(query)
+        if not norm:
+            return None
+        entry = self._exact.pop(norm, None)
+        if entry is None:
+            return None
+        if time.time() - entry["ts"] > self.ttl:
+            logger.debug("exact cache entry expired, dropping: %r", query)
+            return None
+        self._exact[norm] = entry  # move to tail (most-recently-used)
+        return {
+            "answer": entry["answer"],
+            "mode": entry["mode"],
+            "similarity": 1.0,
+        }
+
+    def _exact_put(self, query: str, answer: str, mode: str) -> None:
+        norm = self._normalize(query)
+        if not norm:
+            return
+        self._exact[norm] = {"answer": answer, "mode": mode, "ts": time.time()}
+        self._exact.move_to_end(norm)
+        while len(self._exact) > self.capacity:
+            self._exact.popitem(last=False)  # evict LRU
 
     # -- embedding ---------------------------------------------------------
 
@@ -78,7 +125,16 @@ class SemanticAnswerCache:
     # -- API ---------------------------------------------------------------
 
     def get(self, query: str) -> Optional[dict[str, Any]]:
-        """Return cached {answer, mode, similarity} or None (miss / embed fail)."""
+        """Return cached {answer, mode, similarity} or None (miss / embed fail).
+
+        Exact-LRU layer first (0ms, no network), then the semantic layer
+        (one bge-m3 embedding call ~0.5s + cosine scan).
+        """
+        hit = self._exact_get(query)
+        if hit is not None:
+            logger.info("semantic cache exact HIT mode=%s", hit["mode"])
+            return hit
+
         emb = self._embed(query)
         if emb is None:
             return None
@@ -121,8 +177,12 @@ class SemanticAnswerCache:
         if len(self._entries) > self.capacity:
             self._entries = self._entries[-self.capacity:]
 
+        # Keep the exact-LRU layer in sync (no embedding cost here).
+        self._exact_put(query, answer, mode)
+
     def size(self) -> int:
         return len(self._entries)
 
     def clear(self) -> None:
         self._entries = []
+        self._exact.clear()
